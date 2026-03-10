@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.worldmonitor.app)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:acleddata.com)",
+      "WebFetch(domain:restcountries.com)",
+      "WebFetch(domain:api.gdeltproject.org)",
+      "WebFetch(domain:earthquake.usgs.gov)",
+      "WebFetch(domain:nominatim.openstreetmap.org)",
+      "WebFetch(domain:api.reliefweb.int)",
+      "WebFetch(domain:www.gdeltproject.org)",
+      "WebFetch(domain:ghoapi.azureedge.net)",
+      "WebFetch(domain:en.wikipedia.org)",
+      "WebFetch(domain:countriesnow.space)",
+      "WebFetch(domain:www.worldometers.info)",
+      "WebFetch(domain:www.prsgroup.com)",
+      "WebFetch(domain:developers.google.com)",
+      "WebFetch(domain:api.worldbank.org)",
+      "Bash(open:*)",
+      "Bash(curl:*)",
+      "Bash(echo === $ep ===:*)",
+      "Bash(# Get the full bootstrap payload structure\ncurl -s \"http://localhost:8001/api?endpoint=/api/bootstrap\" | python3 -c \"\nimport sys, json\nd = json.load\\(sys.stdin\\)\ndata = d.get\\('data', {}\\)\nfor key in data:\n    val = data[key]\n    if isinstance\\(val, dict\\):\n        print\\(f'{key}: dict keys={list\\(val.keys\\(\\)\\)[:5]}'\\)\n    elif isinstance\\(val, list\\):\n        print\\(f'{key}: list len={len\\(val\\)}'\\)\n    else:\n        print\\(f'{key}: {type\\(val\\).__name__} = {str\\(val\\)[:80]}'\\)\n\" 2>&1)",
+      "Bash(# Get full CII structure including Iran \\(uses 'region' not 'country'\\)\ncurl -s \"http://localhost:8001/api?endpoint=/api/bootstrap\" | python3 -c \"\nimport sys, json\nd = json.load\\(sys.stdin\\)['data']\ncii = d.get\\('riskScores', {}\\).get\\('ciiScores', []\\)\niran = [x for x in cii if x.get\\('region'\\)=='IR']\nprint\\('Iran CII:', json.dumps\\(iran, indent=2\\) if iran else 'NOT FOUND'\\)\nprint\\('---'\\)\nprint\\('Iran events sample:', json.dumps\\(d.get\\('iranEvents',{}\\).get\\('events',[]\\)[:2], indent=2\\)[:600]\\)\nprint\\('---'\\)\nstrat = d.get\\('riskScores',{}\\).get\\('strategicRisks',{}\\)\nprint\\('Strategic risks keys:', list\\(strat.keys\\(\\)\\)[:5] if isinstance\\(strat, dict\\) else type\\(strat\\)\\)\n\" 2>&1)",
+      "Bash(lsof:*)",
+      "Bash(python3:*)",
+      "Bash(/Users/emanuell/dev/shimi_project/me_venv/bin/python:*)",
+      "Bash(pkill:*)",
+      "Bash(me_venv/bin/python:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(echo Direct endpoint call failed — trying alternate approach:*)",
+      "Bash(/Users/emanuell/dev/shimi_project/me_venv/bin/python3:*)",
+      "Bash(# Check if data-store has initial data \\(needed for drilldown to work\\)\ncurl -s http://localhost:8050/_dash-layout 2>/dev/null | python3 -c \"\nimport sys, json\nlayout = json.load\\(sys.stdin\\)\n# Find data-store props\ndef find\\(obj, target_id, depth=0\\):\n    if isinstance\\(obj, dict\\):\n        if obj.get\\('props', {}\\).get\\('id'\\) == target_id:\n            props = obj.get\\('props', {}\\)\n            print\\(f'Found {target_id}: data={str\\(props.get\\(\\\\\"data\\\\\",\\\\\"NONE\\\\\"\\)\\)[:80]}'\\)\n        for v in obj.values\\(\\):\n            find\\(v, target_id, depth+1\\)\n    elif isinstance\\(obj, list\\):\n        for item in obj:\n            find\\(item, target_id, depth+1\\)\nfind\\(layout, 'data-store'\\)\nfind\\(layout, 'country-select'\\)\n\" 2>/dev/null)",
+      "Bash(git:*)",
+      "Bash(brew install:*)",
+      "Bash(gh:*)",
+      "Bash(/Users/emanuell/dev/shimi_project/.gitignore:*)"
+    ]
+  }
+}

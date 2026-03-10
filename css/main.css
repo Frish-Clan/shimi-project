@@ -1,0 +1,303 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
+:root {
+  /* worldmonitor.app dark palette */
+  --bg-root:      #0a0a0a;
+  --bg-panel:     #141414;
+  --bg-surface:   #1e1e1e;
+  --bg-hover:     #252525;
+  --border:       #2a2a2a;
+  --border-light: #333333;
+
+  --text-primary:   #e8e8e8;
+  --text-secondary: #9a9a9a;
+  --text-muted:     #666666;
+
+  --accent:         #22d3a5;   /* teal accent – worldmonitor brand */
+  --accent-dim:     #0f5040;
+
+  --risk-critical: #ef4444;
+  --risk-high:     #f97316;
+  --risk-elevated: #eab308;
+  --risk-stable:   #22c55e;
+
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --header-h: 40px;
+  --radius: 0px; /* worldmonitor uses sharp corners */
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  font-family: var(--font-mono);
+  background: var(--bg-root);
+  color: var(--text-primary);
+  height: 100%;
+  overflow: hidden; /* full-viewport layout */
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ── Header ── */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--header-h);
+  padding: 0 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  flex-shrink: 0;
+  z-index: 300;
+}
+
+.header-left { display: flex; align-items: center; gap: 10px; }
+
+.app-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.title-sep { color: var(--border-light); margin: 0 2px; }
+
+.app-status {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-root);
+  white-space: nowrap;
+  letter-spacing: 0.03em;
+}
+
+.live-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+.btn-refresh {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-refresh:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Root layout: header + body ── */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ── Main body: left sidebar | map | right sidebar ── */
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar base ── */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.sidebar-right {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.sidebar-left  { width: 280px; min-width: 140px; max-width: 520px; }
+.sidebar-right { width: 300px; min-width: 140px; max-width: 520px; }
+
+/* ── Panel block inside sidebar ── */
+.panel {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+.panel--flex { flex: 1; min-height: 0; }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  height: 30px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+  gap: 8px;
+}
+.panel-header h2 {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+.panel-subtitle {
+  font-size: 9px;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Map center ── */
+.map-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ── Bottom strip: risk table + charts ── */
+.bottom-strip {
+  height: 340px;       /* overridden by resizer at runtime */
+  min-height: 80px;
+  flex-shrink: 0;
+  display: flex;
+  background: var(--bg-panel);
+}
+
+.panel-risk {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.panel-charts {
+  flex: 1.2;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Loading overlay ── */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(10,10,10,0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.spinner {
+  width: 24px; height: 24px;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Footer ── */
+.app-footer {
+  text-align: center;
+  padding: 4px;
+  font-size: 9px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+/* ── Resizer drag handles ── */
+.resizer {
+  flex-shrink: 0;
+  background: var(--border);
+  position: relative;
+  z-index: 100;
+  transition: background 0.15s;
+}
+
+/* Glow on hover / active */
+.resizer:hover,
+.resizer:active {
+  background: var(--accent);
+}
+
+/* Show a centered grab-icon dot */
+.resizer::after {
+  content: '';
+  position: absolute;
+  background: currentColor;
+  opacity: 0.4;
+  border-radius: 999px;
+}
+
+/* Horizontal resizer (separates left/right panels) */
+.resizer-h {
+  width: 4px;
+  cursor: col-resize;
+  align-self: stretch;
+}
+.resizer-h::after {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 24px;
+  width: 2px;
+  margin: -12px auto 0;
+}
+
+/* Vertical resizer (separates top/bottom panels) */
+.resizer-v {
+  height: 4px;
+  cursor: row-resize;
+  width: 100%;
+}
+.resizer-v::after {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  height: 2px;
+  margin: auto 0 0 -12px;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-light); }
+::-webkit-scrollbar-thumb:hover { background: #444; }
+
+/* ── Responsive (collapse sidebars on small screens) ── */
+@media (max-width: 1100px) {
+  .sidebar-right { display: none; }
+}
+@media (max-width: 800px) {
+  .app-body { flex-direction: column; }
+  .sidebar-left { width: 100%; height: 220px; flex-direction: row; border-right: none; border-bottom: 1px solid var(--border); }
+  .bottom-strip { height: auto; flex-direction: column; }
+}

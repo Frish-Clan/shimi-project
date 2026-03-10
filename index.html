@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GeoWatch — Global Situation Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/panels.css">
+  <link rel="stylesheet" href="css/map.css">
+  <link rel="stylesheet" href="css/windows.css">
+</head>
+<body>
+
+<div class="app-shell">
+
+  <!-- ═══════════ HEADER ═══════════ -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="live-dot"></div>
+      <span class="app-title">GeoWatch</span>
+      <span class="title-sep">/</span>
+      <span class="app-status" id="app-status">Initializing…</span>
+    </div>
+    <div class="header-right">
+      <button class="btn-refresh" id="refresh-btn">↻ Refresh</button>
+    </div>
+  </header>
+
+  <!-- ═══════════ INFRASTRUCTURE TOOLBAR ═══════════ -->
+  <div class="infra-toolbar" id="infra-toolbar">
+    <span class="infra-toolbar-label">Infrastructure</span>
+    <!-- infra buttons injected by windows.js -->
+  </div>
+
+  <!-- ═══════════ BODY ═══════════ -->
+  <div class="app-body">
+
+    <!-- LEFT SIDEBAR — Global Situation -->
+    <aside class="sidebar sidebar-left" id="sidebar-left">
+      <div class="panel-header">
+        <h2>Global Situation</h2>
+        <span style="font-size:9px;color:var(--text-muted)" id="country-count"></span>
+      </div>
+
+      <input type="text" id="country-search" class="search-input" placeholder="Filter countries…" autocomplete="off">
+
+      <div id="country-list" class="country-list"></div>
+    </aside>
+
+    <!-- RESIZER: left sidebar | map -->
+    <div class="resizer resizer-h" id="resizer-left" title="Drag to resize"></div>
+
+    <!-- CENTER — Map + Bottom Strip -->
+    <div class="map-area">
+
+      <!-- MAP -->
+      <div id="map" style="flex:1;min-height:0;"></div>
+
+      <!-- MAP LEGEND -->
+      <div class="map-legend">
+        <div class="map-legend-title">Stability Index</div>
+        <div class="map-legend-item"><div class="map-legend-swatch" style="background:#15803d"></div> High (&gt;1.0)</div>
+        <div class="map-legend-item"><div class="map-legend-swatch" style="background:#166534"></div> Moderate (0–1.0)</div>
+        <div class="map-legend-item"><div class="map-legend-swatch" style="background:#92400e"></div> Low (-1.0–0)</div>
+        <div class="map-legend-item"><div class="map-legend-swatch" style="background:#9a3412"></div> Very Low (-2.0 – -1.0)</div>
+        <div class="map-legend-item"><div class="map-legend-swatch" style="background:#7f1d1d"></div> Critical (&lt;-2.0)</div>
+        <div class="map-legend-item" style="margin-top:5px"><div class="map-legend-swatch" style="background:#eab308;border-radius:50%;width:8px;height:8px"></div> Seismic (7d)</div>
+      </div>
+
+      <!-- RESIZER: map | bottom strip -->
+      <div class="resizer resizer-v" id="resizer-bottom" title="Drag to resize"></div>
+
+      <!-- BOTTOM STRIP: Risk Table | Charts -->
+      <div class="bottom-strip">
+
+        <!-- Risk Table -->
+        <div class="panel-risk">
+          <div class="panel-header">
+            <h2>Strategic Risk Overview</h2>
+            <div id="risk-summary"></div>
+          </div>
+          <div id="risk-table-container" class="risk-table-container">
+            <div class="loading-msg">Loading risk data…</div>
+          </div>
+        </div>
+
+        <!-- RESIZER: risk table | charts -->
+        <div class="resizer resizer-h" id="resizer-bottom-mid" title="Drag to resize"></div>
+
+        <!-- Dynamic Charts -->
+        <div class="panel-charts">
+          <div class="panel-header">
+            <h2 id="chart-panel-title">Global Conflict Trends</h2>
+          </div>
+          <div class="charts-grid" id="charts-grid">
+            <div class="chart-card">
+              <h3>Conflict News Volume (30d)</h3>
+              <div class="chart-container"><canvas id="chart-conflict"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <h3>Political Stability Trend</h3>
+              <div class="chart-container"><canvas id="chart-stability"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <h3>Governance Radar</h3>
+              <div class="chart-container"><canvas id="chart-radar"></canvas></div>
+            </div>
+            <div class="chart-card" id="seismic-card">
+              <h3>Seismic Activity (7d)</h3>
+              <div class="chart-container"><canvas id="chart-seismic"></canvas></div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /bottom-strip -->
+    </div><!-- /map-area -->
+
+    <!-- RESIZER: map | right sidebar -->
+    <div class="resizer resizer-h" id="resizer-right" title="Drag to resize"></div>
+
+    <!-- RIGHT SIDEBAR — Country Instability -->
+    <aside class="sidebar sidebar-right" style="position:relative;">
+      <div class="panel-header">
+        <h2>Country Instability</h2>
+        <span class="panel-subtitle" id="selected-country-name">— select a country</span>
+      </div>
+
+      <div class="loading-overlay" id="panel2-loading" style="display:none">
+        <div class="spinner"></div>
+      </div>
+
+      <div class="instability-content" id="instability-content">
+        <div class="no-selection-msg">
+          <span class="prompt-icon">🗺</span>
+          <span>Click any country on the map or in the list to view instability metrics.</span>
+        </div>
+      </div>
+    </aside>
+
+  </div><!-- /app-body -->
+
+  <!-- ═══════════ FOOTER ═══════════ -->
+  <footer class="app-footer">
+    DATA SOURCES: WORLD BANK · GDELT PROJECT · USGS EARTHQUAKES · REST COUNTRIES
+  </footer>
+
+</div><!-- /app-shell -->
+
+<!-- ── Floating windows layer (on top of everything) ── -->
+<div id="windows-layer"></div>
+
+<!-- ── External libraries ── -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+
+<!-- ── App entry ── -->
+<script type="module" src="js/app.js"></script>
+<script type="module">
+  import { initResizers }    from './js/resizer.js';
+  import { initInfraToolbar } from './js/windows.js';
+  initResizers();
+  initInfraToolbar();
+</script>
+</body>
+</html>

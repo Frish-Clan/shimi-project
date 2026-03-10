@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+me_venv/
+.env
+
+# Logs & runtime
+*.log
+/tmp/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+
+# Score log (runtime data — exclude from repo)
+wm_score_log.json
+worldmonitor/node_modules/
+worldmonitor/.git/
