@@ -254,17 +254,24 @@ def fetch_wm_live(iso2: str) -> dict:
                     wait_until="commit",
                     timeout=30000,
                 )
-                page.wait_for_selector(f'.cii-country[data-code="{iso2}"]', timeout=20000)
-                time.sleep(3)
+                # Wait for the CDP detail panel to render component rows
+                page.wait_for_selector('.cdp-score-row', timeout=20000)
+                time.sleep(8)   # let real-time signals finish loading
                 raw = page.evaluate(f'''() => {{
                     const el = document.querySelector('.cii-country[data-code="{iso2}"]');
-                    const briefs = Array.from(document.querySelectorAll('.cdp-assessment-text p'));
-                    const chips  = Array.from(document.querySelectorAll('.cdp-signal-chip'));
+                    const briefs  = Array.from(document.querySelectorAll('.cdp-assessment-text p'));
+                    const chips   = Array.from(document.querySelectorAll('.cdp-signal-chip'));
+                    // Read component values from CDP detail panel — same panel the user sees
+                    const compRows = Array.from(document.querySelectorAll('.cdp-score-row'));
+                    const comps = compRows
+                        .filter(r => r.querySelector('.cdp-comp-label') && r.querySelector('.cdp-comp-val'))
+                        .map(r => ({{
+                            name:  r.querySelector('.cdp-comp-label').textContent.trim(),
+                            value: r.querySelector('.cdp-comp-val').textContent.trim(),
+                        }}));
                     return {{
-                        score: el ? el.querySelector('.cii-score')?.textContent : null,
-                        comps: el ? Array.from(el.querySelectorAll('.cii-components span[title]')).map(s => ({{
-                            name: s.title, value: s.textContent
-                        }})) : [],
+                        score:   el ? el.querySelector('.cii-score')?.textContent : null,
+                        comps,
                         briefs:  briefs.map(p => p.textContent.trim()).filter(t => t),
                         signals: chips.map(c => c.textContent.trim()).filter(t => t),
                     }};
@@ -273,10 +280,9 @@ def fetch_wm_live(iso2: str) -> dict:
                 if raw and raw.get("score"):
                     result["cii_score"] = int(raw["score"])
                     for comp in raw.get("comps", []):
-                        val_str = comp["value"].split(":")[-1] if ":" in comp["value"] else comp["value"]
                         try:
-                            result["components"][comp["name"]] = int(val_str)
-                        except ValueError:
+                            result["components"][comp["name"]] = int(comp["value"])
+                        except (ValueError, KeyError):
                             pass
                     result["brief"]   = "\n".join(raw.get("briefs", []))
                     result["signals"] = raw.get("signals", [])
