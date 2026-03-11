@@ -48,9 +48,10 @@ CACHE_TTL    = 10 * 60                           # 10 min — seconds
 # SECTION: DATE RANGE SETTINGS
 # ════════════════════════════════════════════════════════════════════════════
 
-HISTORY_DAYS = 180    # how many days to backfill / retain (6 months)
-CHART_DAYS   = 90     # how many days to show in the history chart (3 months)
-RECENT_DAYS  = 30     # "recent" window for delta calculations
+HISTORY_DAYS  = 180    # how many days to backfill / retain (6 months)
+CHART_DAYS    = 90     # how many days to show in the history chart (3 months)
+RECENT_DAYS   = 30     # "recent" window for delta calculations
+WM_SCRAPE_TTL = 20 * 60   # 20 min cache for scraped data
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION: SPIKE DETECTION THRESHOLDS — tune these
@@ -81,6 +82,14 @@ ME_COUNTRIES = {
     "AE": {"name": "UAE",          "iso3": "ARE", "lat": 23.4, "lon": 53.8},
     "YE": {"name": "Yemen",        "iso3": "YEM", "lat": 15.6, "lon": 48.5},
 }
+
+EVENT_TYPE_LABEL = {
+    "UNREST_EVENT_TYPE_PROTEST":  "Protest",
+    "UNREST_EVENT_TYPE_MILITARY": "Military",
+    "UNREST_EVENT_TYPE_NATURAL":  "Natural",
+}
+
+_ISO3_TO_ISO2 = {meta["iso3"]: iso2 for iso2, meta in ME_COUNTRIES.items()}
 
 # ════════════════════════════════════════════════════════════════════════════
 # DESIGN TOKENS
@@ -123,6 +132,10 @@ def delta_color(delta):
     if delta < -3: return CLR["stable"]
     if delta < 0:  return "#4ade80"
     return CLR["muted"]
+
+def format_delta(v) -> str:
+    if _is_null(v): return "—"
+    return f"+{v:.1f}" if v > 0 else f"{v:.1f}"
 
 # ════════════════════════════════════════════════════════════════════════════
 # API LAYER — WorldMonitor data fetch + mock fallback
@@ -181,132 +194,97 @@ def fetch_unrest_events(days: int = 30) -> list:
     return _cached(f"unrest_events_{days}d", CACHE_TTL, _fetch)
 
 
-WM_SCRAPE_TTL = 20 * 60   # 20 min cache for scraped data
-
-
 def fetch_wm_all_scores() -> dict:
-    """
-    Scrape worldmonitor.app once and extract live CII scores for ALL countries.
-    Returns { iso2: { score, components } }
-    One browser load → 87+ countries in ~15s, cached 20 min.
-    """
-    cache_key = "wm_scrape_all"
-    entry = _cache.get(cache_key)
-    if entry and (time.time() - entry["ts"]) < WM_SCRAPE_TTL:
-        return entry["data"]
-
-    result = {}
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            page = browser.new_page()
-            # Loading with ?country=IR triggers full 207-country CII data load
-            page.goto("https://www.worldmonitor.app/?country=IR", wait_until="commit", timeout=30000)
-            page.wait_for_selector(".cii-country", timeout=20000)
-            time.sleep(3)
-
-            raw_list = page.evaluate('''() => {
-                return Array.from(document.querySelectorAll('.cii-country[data-code]')).map(el => ({
-                    iso2:  el.dataset.code,
-                    score: el.querySelector('.cii-score')?.textContent || null,
-                    comps: Array.from(el.querySelectorAll('.cii-components span[title]')).map(s => ({
-                        name: s.title, value: s.textContent
-                    })),
-                }));
-            }''')
-            browser.close()
-
-            for entry in raw_list:
-                iso2 = entry.get("iso2")
-                score_str = entry.get("score")
-                if not iso2 or not score_str:
-                    continue
-                try:
-                    score = int(score_str)
-                except ValueError:
-                    continue
-                components = {}
-                for comp in entry.get("comps", []):
-                    val_str = comp["value"].split(":")[-1] if ":" in comp["value"] else comp["value"]
+    """Scrape worldmonitor.app once and extract live CII scores for ALL countries."""
+    def _scrape():
+        result = {}
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto("https://www.worldmonitor.app/?country=IR", wait_until="commit", timeout=30000)
+                page.wait_for_selector(".cii-country", timeout=20000)
+                time.sleep(3)
+                raw_list = page.evaluate('''() => {
+                    return Array.from(document.querySelectorAll('.cii-country[data-code]')).map(el => ({
+                        iso2:  el.dataset.code,
+                        score: el.querySelector('.cii-score')?.textContent || null,
+                        comps: Array.from(el.querySelectorAll('.cii-components span[title]')).map(s => ({
+                            name: s.title, value: s.textContent
+                        })),
+                    }));
+                }''')
+                browser.close()
+                for entry in raw_list:
+                    iso2 = entry.get("iso2")
+                    score_str = entry.get("score")
+                    if not iso2 or not score_str:
+                        continue
                     try:
-                        components[comp["name"]] = int(val_str)
+                        score = int(score_str)
                     except ValueError:
-                        pass
-                result[iso2] = {"score": score, "components": components, "source": "worldmonitor_scraped"}
-
-        print(f"[WM-scrape] fetched {len(result)} country scores from worldmonitor.app")
-    except Exception as e:
-        print(f"[WM-scrape] all-scores fetch failed: {e}")
-
-    _cache[cache_key] = {"data": result, "ts": time.time()}
-    return result
+                        continue
+                    components = {}
+                    for comp in entry.get("comps", []):
+                        val_str = comp["value"].split(":")[-1] if ":" in comp["value"] else comp["value"]
+                        try:
+                            components[comp["name"]] = int(val_str)
+                        except ValueError:
+                            pass
+                    result[iso2] = {"score": score, "components": components, "source": "worldmonitor_scraped"}
+            print(f"[WM-scrape] fetched {len(result)} country scores from worldmonitor.app")
+        except Exception as e:
+            print(f"[WM-scrape] all-scores fetch failed: {e}")
+        return result
+    return _cached("wm_scrape_all", WM_SCRAPE_TTL, _scrape)
 
 
 def fetch_wm_live(iso2: str) -> dict:
-    """
-    Scrape the WorldMonitor website for live instability data for a country.
-    Returns:
-        {
-          'cii_score': int | None,
-          'components': {'Unrest': int, 'Conflict': int, 'Security': int, 'Information': int},
-          'brief': str,
-          'signals': [str],
-          'error': str | None,
-        }
-    """
-    cache_key = f"wm_scrape_{iso2}"
-    entry = _cache.get(cache_key)
-    if entry and (time.time() - entry["ts"]) < WM_SCRAPE_TTL:
-        return entry["data"]
-
-    result = {"cii_score": None, "components": {}, "brief": "", "signals": [], "error": None}
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(
-                f"https://www.worldmonitor.app/?country={iso2}",
-                wait_until="commit",
-                timeout=30000,
-            )
-            # Wait for the CII list to be populated by JS, then extra pause for CDP panel
-            page.wait_for_selector(f'.cii-country[data-code="{iso2}"]', timeout=20000)
-            time.sleep(3)
-
-            raw = page.evaluate(f'''() => {{
-                const el = document.querySelector('.cii-country[data-code="{iso2}"]');
-                const briefs = Array.from(document.querySelectorAll('.cdp-assessment-text p'));
-                const chips  = Array.from(document.querySelectorAll('.cdp-signal-chip'));
-                return {{
-                    name:  el ? el.querySelector('.cii-name')?.textContent : null,
-                    score: el ? el.querySelector('.cii-score')?.textContent : null,
-                    comps: el ? Array.from(el.querySelectorAll('.cii-components span[title]')).map(s => ({{
-                        name: s.title, value: s.textContent
-                    }})) : [],
-                    briefs:  briefs.map(p => p.textContent.trim()).filter(t => t),
-                    signals: chips.map(c => c.textContent.trim()).filter(t => t),
-                }};
-            }}''')
-            browser.close()
-
-            if raw and raw.get("score"):
-                result["cii_score"] = int(raw["score"])
-                for comp in raw.get("comps", []):
-                    val_str = comp["value"].split(":")[-1] if ":" in comp["value"] else comp["value"]
-                    try:
-                        result["components"][comp["name"]] = int(val_str)
-                    except ValueError:
-                        pass
-                result["brief"]   = "\n".join(raw.get("briefs", []))
-                result["signals"] = raw.get("signals", [])
-    except Exception as e:
-        result["error"] = str(e)
-        print(f"[WM-scrape] {iso2}: {e}")
-
-    _cache[cache_key] = {"data": result, "ts": time.time()}
-    return result
+    """Scrape the WorldMonitor website for live instability data for a single country."""
+    def _scrape():
+        result = {"cii_score": None, "components": {}, "brief": "", "signals": [], "error": None}
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(
+                    f"https://www.worldmonitor.app/?country={iso2}",
+                    wait_until="commit",
+                    timeout=30000,
+                )
+                page.wait_for_selector(f'.cii-country[data-code="{iso2}"]', timeout=20000)
+                time.sleep(3)
+                raw = page.evaluate(f'''() => {{
+                    const el = document.querySelector('.cii-country[data-code="{iso2}"]');
+                    const briefs = Array.from(document.querySelectorAll('.cdp-assessment-text p'));
+                    const chips  = Array.from(document.querySelectorAll('.cdp-signal-chip'));
+                    return {{
+                        score: el ? el.querySelector('.cii-score')?.textContent : null,
+                        comps: el ? Array.from(el.querySelectorAll('.cii-components span[title]')).map(s => ({{
+                            name: s.title, value: s.textContent
+                        }})) : [],
+                        briefs:  briefs.map(p => p.textContent.trim()).filter(t => t),
+                        signals: chips.map(c => c.textContent.trim()).filter(t => t),
+                    }};
+                }}''')
+                browser.close()
+                if raw and raw.get("score"):
+                    result["cii_score"] = int(raw["score"])
+                    for comp in raw.get("comps", []):
+                        val_str = comp["value"].split(":")[-1] if ":" in comp["value"] else comp["value"]
+                        try:
+                            result["components"][comp["name"]] = int(val_str)
+                        except ValueError:
+                            pass
+                    result["brief"]   = "\n".join(raw.get("briefs", []))
+                    result["signals"] = raw.get("signals", [])
+        except Exception as e:
+            result["error"] = str(e)
+            print(f"[WM-scrape] {iso2}: {e}")
+        return result
+    return _cached(f"wm_scrape_{iso2}", WM_SCRAPE_TTL, _scrape)
 
 
 def fetch_global_risk_scores() -> dict:
@@ -613,8 +591,8 @@ def compute_history_analytics(hist_df: pd.DataFrame) -> dict:
     df["ma30"] = df["score"].rolling(30, min_periods=1).mean()
 
     scores = df["score"].values
-    mean_6m = float(np.mean(scores))
-    std_6m  = float(np.std(scores)) or 1.0
+    mean_3m = float(np.mean(scores))
+    std_3m  = float(np.std(scores)) or 1.0
 
     # Recent 30-day window
     recent_mask = df["date"] >= (pd.Timestamp.now() - pd.Timedelta(days=30))
@@ -658,13 +636,13 @@ def compute_history_analytics(hist_df: pd.DataFrame) -> dict:
 
     return {
         "df":           df,
-        "mean_6m":      round(mean_6m, 1),
-        "std_6m":       round(std_6m, 1),
+        "mean_3m":      round(mean_3m, 1),
+        "std_3m":       round(std_3m, 1),
         "std_recent":   round(std_recent, 1),
         "slope_30d":    round(slope_30d, 3),
         "spikes":       deduped[-5:],       # last 5 spikes max
-        "volatile":     std_recent > VOLATILITY_RATIO * std_6m,
-        "above_avg":    float(scores[-1]) > mean_6m if len(scores) else False,
+        "volatile":     std_recent > VOLATILITY_RATIO * std_3m,
+        "above_avg":    float(scores[-1]) > mean_3m if len(scores) else False,
     }
 
 
@@ -715,7 +693,7 @@ def generate_narrative(name: str, score: float, row: dict, analytics: dict) -> s
     d7    = row.get("delta_7d")  or 0
     d30   = row.get("delta_30d") or 0
     d180  = row.get("delta_180d") or 0
-    mean  = analytics["mean_6m"]
+    mean  = analytics["mean_3m"]
     slope = analytics["slope_30d"]
     vol   = analytics["volatile"]
     band  = row.get("score_band", "")
@@ -760,6 +738,13 @@ def generate_narrative(name: str, score: float, row: dict, analytics: dict) -> s
 # ════════════════════════════════════════════════════════════════════════════
 # CHART BUILDERS
 # ════════════════════════════════════════════════════════════════════════════
+
+def empty_figure(plot_bg: str = CLR["panel"]) -> go.Figure:
+    fig = go.Figure()
+    fig.update_layout(paper_bgcolor=CLR["panel"], plot_bgcolor=plot_bg,
+                      margin=dict(l=10, r=10, t=30, b=10))
+    return fig
+
 
 def build_bar_chart(df: pd.DataFrame, selected_iso2: str | None = None, sort_by: str = "score") -> go.Figure:
     df_sorted = df[df["score"].notna()].sort_values(sort_by, ascending=True)
@@ -878,9 +863,9 @@ def build_history_chart(analytics: dict, country_name: str, score: float) -> go.
 
     # 3-month average line
     fig.add_hline(
-        y=analytics["mean_6m"],
+        y=analytics["mean_3m"],
         line=dict(color="rgba(255,255,255,0.12)", width=1, dash="longdash"),
-        annotation_text=f"3m avg: {analytics['mean_6m']:.0f}",
+        annotation_text=f"3m avg: {analytics['mean_3m']:.0f}",
         annotation_position="bottom right",
         annotation_font=dict(color=CLR["muted"], size=9),
     )
@@ -957,7 +942,7 @@ def build_map(df: pd.DataFrame, selected_iso2: str | None = None) -> go.Figure:
     # Score labels as scatter dots (show all countries; N/A when no live score)
     for _, row in df.iterrows():
         is_sel  = row["iso2"] == selected_iso2
-        has_score = row["score"] is not None and not (isinstance(row["score"], float) and pd.isna(row["score"]))
+        has_score = not _is_null(row["score"])
         dot_label = f"{row['score']:.0f}" if has_score else "N/A"
         fig.add_trace(go.Scattergeo(
             lat=[row["lat"]],
@@ -1064,31 +1049,32 @@ app = dash.Dash(
     title="ME Instability Monitor",
 )
 
-# Pre-load data at startup so charts render immediately on first page visit
-print("[startup] Loading initial data…")
-try:
-    _, _initial_df = load_all_data()
-    _initial_json = _initial_df.to_json(date_format="iso", orient="records")
-    print(f"[startup] Loaded {len(_initial_df)} countries OK")
+def _run_startup() -> str | None:
+    print("[startup] Loading initial data…")
+    try:
+        _, _initial_df = load_all_data()
+        print(f"[startup] Loaded {len(_initial_df)} countries OK")
 
-    # Backfill 3-month history for any country that's missing days
-    _current_scores = {
-        row["iso2"]: row["score"]
-        for _, row in _initial_df.iterrows()
-        if row["score"] is not None
-    }
-    # Use WM staticBaseline scores as the historical level
-    _bootstrap = fetch_bootstrap()
-    _baseline_scores = {
-        e["region"]: e["staticBaseline"]
-        for e in _bootstrap.get("riskScores", {}).get("ciiScores", [])
-        if e.get("region") and e.get("staticBaseline") is not None
-    }
-    backfill_score_log(_current_scores, _baseline_scores)
+        # Backfill 3-month history for any country that's missing days
+        _current_scores = {
+            row["iso2"]: row["score"]
+            for _, row in _initial_df.iterrows()
+            if row["score"] is not None
+        }
+        # Use WM staticBaseline scores as the historical level
+        _bootstrap = fetch_bootstrap()
+        _baseline_scores = {
+            e["region"]: e["staticBaseline"]
+            for e in _bootstrap.get("riskScores", {}).get("ciiScores", [])
+            if e.get("region") and e.get("staticBaseline") is not None
+        }
+        backfill_score_log(_current_scores, _baseline_scores)
+        return _initial_df.to_json(date_format="iso", orient="records")
+    except Exception as e:
+        print(f"[startup] Initial load failed: {e}")
+        return None
 
-except Exception as _e:
-    print(f"[startup] Initial load failed: {_e}")
-    _initial_json = None
+_initial_json = _run_startup()
 
 # ── Custom CSS ───────────────────────────────────────────────────────────────
 app.index_string = '''
@@ -1346,10 +1332,6 @@ def update_kpis(json_data, selected_iso2):
     d30     = r.get("delta_30d")
     sc      = score_color(r["score"])
 
-    def fmt_d(v):
-        if _is_null(v): return "—"
-        return f"+{v:.1f}" if v > 0 else f"{v:.1f}"
-
     country_banner = dbc.Col(
         html.Div([
             html.Span("▶ SELECTED: ", style={"color": CLR["muted"], "fontSize": "9px",
@@ -1358,10 +1340,10 @@ def update_kpis(json_data, selected_iso2):
                       style={"color": sc, "fontSize": "9px", "fontWeight": "700",
                              "letterSpacing": "0.1em", "fontFamily": "JetBrains Mono, monospace"}),
             dbc.Row([
-                dbc.Col(metric_tile("Score", f"{r['score']:.0f}" if r['score'] is not None and not (isinstance(r['score'], float) and pd.isna(r['score'])) else "N/A", sc), width=3),
+                dbc.Col(metric_tile("Score", f"{r['score']:.0f}" if not _is_null(r['score']) else "N/A", sc), width=3),
                 dbc.Col(metric_tile("Band",        r.get("score_band","—"), sc),           width=3),
-                dbc.Col(metric_tile("7d Change",   fmt_d(d7),  delta_color(d7)),           width=2),
-                dbc.Col(metric_tile("30d Change",  fmt_d(d30), delta_color(d30)),          width=2),
+                dbc.Col(metric_tile("7d Change",   format_delta(d7),  delta_color(d7)),           width=2),
+                dbc.Col(metric_tile("30d Change",  format_delta(d30), delta_color(d30)),          width=2),
                 dbc.Col(metric_tile("Rank",        f"#{int(r['rank'])} / {len(df)}" if not _is_null(r.get('rank')) else "— / {}".format(len(df)),
                                     CLR["muted"]),                                         width=2),
             ], className="g-2 mt-2"),
@@ -1383,16 +1365,11 @@ def update_kpis(json_data, selected_iso2):
 )
 def update_visuals(json_data, selected):
     if not json_data:
-        empty = go.Figure()
-        empty.update_layout(paper_bgcolor=CLR["panel"], plot_bgcolor=CLR["panel"])
+        empty = empty_figure()
         return empty, empty
 
     df = pd.read_json(io.StringIO(json_data), orient="records")
     return build_map(df, selected), build_bar_chart(df, selected)
-
-
-# iso3 → iso2 lookup for choropleth click handling
-_ISO3_TO_ISO2 = {meta["iso3"]: iso2 for iso2, meta in ME_COUNTRIES.items()}
 
 
 @app.callback(
@@ -1430,10 +1407,7 @@ def handle_map_click(map_click, current):
 )
 def update_drilldown(iso2, json_data):
     def _empty():
-        fig = go.Figure()
-        fig.update_layout(paper_bgcolor=CLR["panel"], plot_bgcolor=CLR["bg"],
-                          margin=dict(l=10, r=10, t=30, b=10))
-        return html.Div(), fig, html.Div()
+        return html.Div(), empty_figure(CLR["bg"]), html.Div()
 
     if not json_data or not iso2:
         return _empty()
@@ -1451,7 +1425,7 @@ def update_drilldown(iso2, json_data):
     row   = row.iloc[0].to_dict()
     score = row["score"]
     name  = ME_COUNTRIES[iso2]["name"]
-    has_score = score is not None and not (isinstance(score, float) and pd.isna(score))
+    has_score = not _is_null(score)
 
     # If no live score, show N/A panel
     if not has_score:
@@ -1459,31 +1433,24 @@ def update_drilldown(iso2, json_data):
             f"No live WorldMonitor score available for {name}.",
             style={"color": CLR["muted"], "fontSize": "12px", "padding": "12px 0"},
         )
-        fig = go.Figure()
-        fig.update_layout(paper_bgcolor=CLR["panel"], plot_bgcolor=CLR["bg"],
-                          margin=dict(l=10, r=10, t=30, b=10))
-        return no_data, fig, no_data
+        return no_data, empty_figure(CLR["bg"]), no_data
 
     # History + analytics (only when score is known)
     hist      = get_country_history(iso2, score)
     analytics = compute_history_analytics(hist)
 
-    def fmt_delta(v):
-        if _is_null(v): return "—"
-        return f"+{v:.1f}" if v > 0 else f"{v:.1f}"
-
     band_color = score_color(score)
     dc_7  = delta_color(row.get("delta_7d"))
     dc_30 = delta_color(row.get("delta_30d"))
     rank_val = row.get("rank")
-    rank_str = f"#{int(rank_val)}" if rank_val is not None and not (isinstance(rank_val, float) and pd.isna(rank_val)) else "—"
+    rank_str = f"#{int(rank_val)}" if not _is_null(rank_val) else "—"
 
     metrics = dbc.Row([
         dbc.Col(metric_tile("Score",       f"{score:.0f}",                   band_color), width=6),
         dbc.Col(metric_tile("Band",        row.get("score_band", "—"),       band_color), width=6),
-        dbc.Col(metric_tile("7d Change",   fmt_delta(row.get("delta_7d")),   dc_7),       width=6),
-        dbc.Col(metric_tile("30d Change",  fmt_delta(row.get("delta_30d")),  dc_30),      width=6),
-        dbc.Col(metric_tile("180d Change", fmt_delta(row.get("delta_180d")), CLR["muted"]), width=6),
+        dbc.Col(metric_tile("7d Change",   format_delta(row.get("delta_7d")),   dc_7),       width=6),
+        dbc.Col(metric_tile("30d Change",  format_delta(row.get("delta_30d")),  dc_30),      width=6),
+        dbc.Col(metric_tile("180d Change", format_delta(row.get("delta_180d")), CLR["muted"]), width=6),
         dbc.Col(metric_tile("Rank",        f"{rank_str} / {len(df)}", CLR["muted"]), width=6),
         dbc.Col(metric_tile("Trend",       row.get("trend_label", "—"),      CLR["accent"]), width=12),
     ], className="g-2 mt-1")
@@ -1569,12 +1536,6 @@ def update_conflict_panel(iso2):
             f"No unrest events recorded for {name} in the last 30 days.",
             style={"color": CLR["muted"], "fontSize": "11px"},
         )
-
-    EVENT_TYPE_LABEL = {
-        "UNREST_EVENT_TYPE_PROTEST":  "Protest",
-        "UNREST_EVENT_TYPE_MILITARY": "Military",
-        "UNREST_EVENT_TYPE_NATURAL":  "Natural",
-    }
 
     rows = []
     for e in sorted(events, key=lambda x: x.get("occurredAt", 0), reverse=True)[:50]:
