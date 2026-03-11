@@ -179,6 +179,75 @@ def fetch_ucdp_events() -> list:
     return _cached("ucdp_events", CACHE_TTL, _fetch)
 
 
+WM_SCRAPE_TTL = 20 * 60   # 20 min cache for scraped data
+
+
+def fetch_wm_live(iso2: str) -> dict:
+    """
+    Scrape the WorldMonitor website for live instability data for a country.
+    Returns:
+        {
+          'cii_score': int | None,
+          'components': {'Unrest': int, 'Conflict': int, 'Security': int, 'Information': int},
+          'brief': str,
+          'signals': [str],
+          'error': str | None,
+        }
+    """
+    cache_key = f"wm_scrape_{iso2}"
+    entry = _cache.get(cache_key)
+    if entry and (time.time() - entry["ts"]) < WM_SCRAPE_TTL:
+        return entry["data"]
+
+    result = {"cii_score": None, "components": {}, "brief": "", "signals": [], "error": None}
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(
+                f"https://www.worldmonitor.app/?country={iso2}",
+                wait_until="commit",
+                timeout=30000,
+            )
+            # Wait for the CII list to be populated by JS, then extra pause for CDP panel
+            page.wait_for_selector(f'.cii-country[data-code="{iso2}"]', timeout=20000)
+            time.sleep(3)
+
+            raw = page.evaluate(f'''() => {{
+                const el = document.querySelector('.cii-country[data-code="{iso2}"]');
+                const briefs = Array.from(document.querySelectorAll('.cdp-assessment-text p'));
+                const chips  = Array.from(document.querySelectorAll('.cdp-signal-chip'));
+                return {{
+                    name:  el ? el.querySelector('.cii-name')?.textContent : null,
+                    score: el ? el.querySelector('.cii-score')?.textContent : null,
+                    comps: el ? Array.from(el.querySelectorAll('.cii-components span[title]')).map(s => ({{
+                        name: s.title, value: s.textContent
+                    }})) : [],
+                    briefs:  briefs.map(p => p.textContent.trim()).filter(t => t),
+                    signals: chips.map(c => c.textContent.trim()).filter(t => t),
+                }};
+            }}''')
+            browser.close()
+
+            if raw and raw.get("score"):
+                result["cii_score"] = int(raw["score"])
+                for comp in raw.get("comps", []):
+                    val_str = comp["value"].split(":")[-1] if ":" in comp["value"] else comp["value"]
+                    try:
+                        result["components"][comp["name"]] = int(val_str)
+                    except ValueError:
+                        pass
+                result["brief"]   = "\n".join(raw.get("briefs", []))
+                result["signals"] = raw.get("signals", [])
+    except Exception as e:
+        result["error"] = str(e)
+        print(f"[WM-scrape] {iso2}: {e}")
+
+    _cache[cache_key] = {"data": result, "ts": time.time()}
+    return result
+
+
 def fetch_global_risk_scores() -> dict:
     """
     Fetch all CII scores from WorldMonitor's global risk-scores endpoint.
@@ -998,6 +1067,17 @@ app.layout = dbc.Container([
         ], width=8),
     ], className="g-3 mb-3"),
 
+    # ── LIVE INTELLIGENCE (WorldMonitor website scrape) ───────────────────────
+    dbc.Row([
+        dbc.Col([
+            html.Div([
+                section_header("Live Intelligence — WorldMonitor"),
+                dcc.Loading(type="circle", color=CLR["accent"],
+                            children=html.Div(id="live-intel-panel")),
+            ], className="panel"),
+        ], width=12),
+    ], className="g-3 mb-3"),
+
     # ── CONFLICT EVENTS (UCDP) ───────────────────────────────────────────────
     dbc.Row([
         dbc.Col([
@@ -1356,6 +1436,82 @@ def update_ucdp_panel(iso2):
     )
 
     return html.Div([summary, table])
+
+
+@app.callback(
+    Output("live-intel-panel", "children"),
+    Input("country-select", "value"),
+)
+def update_live_intel(iso2):
+    if not iso2:
+        return html.Div("Select a country.", style={"color": CLR["muted"], "fontSize": "11px"})
+
+    name = ME_COUNTRIES.get(iso2, {}).get("name", iso2)
+    data = fetch_wm_live(iso2)
+
+    if data.get("error"):
+        return html.Div(
+            f"Could not load live data: {data['error']}",
+            style={"color": CLR["muted"], "fontSize": "11px"},
+        )
+
+    score = data.get("cii_score")
+    comps = data.get("components", {})
+    brief = data.get("brief", "")
+    signals = data.get("signals", [])
+
+    # Score row
+    if score is not None:
+        band_color = score_color(score)
+        score_block = dbc.Row([
+            dbc.Col(metric_tile("WM Live Score", str(score), band_color), width=3),
+            dbc.Col(metric_tile("Unrest",    str(comps.get("Unrest",    "—")), CLR["high"]),     width=2),
+            dbc.Col(metric_tile("Conflict",  str(comps.get("Conflict",  "—")), CLR["critical"]), width=2),
+            dbc.Col(metric_tile("Security",  str(comps.get("Security",  "—")), CLR["medium"]),   width=2),
+            dbc.Col(metric_tile("Info Vel.", str(comps.get("Information","—")), CLR["accent"]),  width=3),
+        ], className="g-2 mb-3")
+    else:
+        score_block = html.Div("Score not available.", style={"color": CLR["muted"]})
+
+    # Active signals chips
+    signal_chips = html.Div(
+        [html.Span(s, style={
+            "display": "inline-block", "margin": "2px 4px",
+            "padding": "3px 8px", "borderRadius": "12px",
+            "background": CLR["panel"], "border": f"1px solid {CLR['border']}",
+            "fontSize": "11px", "color": CLR["text"],
+        }) for s in signals] if signals else
+        [html.Span("No active signals.", style={"color": CLR["muted"], "fontSize": "11px"})],
+        style={"marginBottom": "10px"},
+    )
+
+    # Intelligence brief
+    brief_block = html.Div(
+        brief or "No intelligence brief available.",
+        style={"fontSize": "11px", "color": CLR["text"],
+               "whiteSpace": "pre-wrap", "lineHeight": "1.6"},
+    )
+
+    source_note = html.P(
+        "Source: worldmonitor.app (live scrape)",
+        style={"fontSize": "9px", "color": CLR["muted"], "marginTop": "10px",
+               "fontStyle": "italic"},
+    )
+
+    return html.Div([
+        html.H6(f"{name} — Live Instability Data",
+                style={"color": CLR["accent"], "fontSize": "12px", "marginBottom": "10px"}),
+        score_block,
+        html.Div("Active Signals", style={"fontSize": "10px", "color": CLR["muted"],
+                                          "textTransform": "uppercase", "letterSpacing": "0.08em",
+                                          "marginBottom": "4px"}),
+        signal_chips,
+        html.Div("Intelligence Brief", style={"fontSize": "10px", "color": CLR["muted"],
+                                              "textTransform": "uppercase", "letterSpacing": "0.08em",
+                                              "marginBottom": "4px"}),
+        brief_block,
+        source_note,
+    ])
 
 
 # ════════════════════════════════════════════════════════════════════════════
