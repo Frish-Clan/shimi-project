@@ -48,7 +48,8 @@ CACHE_TTL    = 10 * 60                           # 10 min — seconds
 # SECTION: DATE RANGE SETTINGS
 # ════════════════════════════════════════════════════════════════════════════
 
-HISTORY_DAYS = 180    # how many days of history to display (6 months)
+HISTORY_DAYS = 180    # how many days to backfill / retain (6 months)
+CHART_DAYS   = 90     # how many days to show in the history chart (3 months)
 RECENT_DAYS  = 30     # "recent" window for delta calculations
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -157,26 +158,27 @@ def fetch_bootstrap() -> dict:
     return _cached("bootstrap", CACHE_TTL, _fetch)
 
 
-def fetch_ucdp_events() -> list:
+def fetch_unrest_events(days: int = 30) -> list:
     """
-    Fetch UCDP conflict events from WorldMonitor.
+    Fetch WorldMonitor unrest events (GDELT-sourced, real-time) for the last N days.
     Returns full list; caller filters by country name.
     """
     def _fetch():
         try:
+            start = int((datetime.now() - timedelta(days=days)).timestamp())
             r = requests.get(
                 f"{PROXY_BASE}/api",
-                params={"endpoint": "/api/conflict/v1/list-ucdp-events?page_size=2000"},
+                params={"endpoint": f"/api/unrest/v1/list-unrest-events?start={start}&page_size=200"},
                 timeout=API_TIMEOUT * 2,
             )
             r.raise_for_status()
             j = r.json()
             data = j.get("data", j)
-            return data.get("events", data.get("conflicts", []))
+            return data.get("events", data.get("clusters", []))
         except Exception as e:
-            print(f"[API] UCDP fetch failed: {e}")
+            print(f"[API] Unrest events fetch failed: {e}")
             return []
-    return _cached("ucdp_events", CACHE_TTL, _fetch)
+    return _cached(f"unrest_events_{days}d", CACHE_TTL, _fetch)
 
 
 WM_SCRAPE_TTL = 20 * 60   # 20 min cache for scraped data
@@ -406,7 +408,7 @@ def append_scores_to_log(scores: dict[str, float]) -> None:
     today = datetime.now().date().isoformat()
     # Remove existing entry for today (keep only one per day)
     log = [e for e in log if e.get("date") != today]
-    log.append({"date": today, "scores": scores})
+    log.append({"date": today, "scores": scores, "is_real": True})
     # Retain up to 365 days
     log = log[-365:]
     _save_score_log(log)
@@ -445,40 +447,46 @@ def backfill_score_log(current_scores: dict[str, float],
         log_by_date[day] = day_scores
 
     if changed:
-        existing_dates = {e["date"] for e in log}
+        existing_by_date = {e["date"]: e for e in log}
         new_log = []
         for e in log:
             d = e["date"]
-            new_log.append({"date": d, "scores": log_by_date[d]})
+            entry = {"date": d, "scores": log_by_date[d]}
+            if "is_real" in e:
+                entry["is_real"] = e["is_real"]
+            new_log.append(entry)
         for day, scores in sorted(log_by_date.items()):
-            if day not in existing_dates:
-                new_log.append({"date": day, "scores": scores})
+            if day not in existing_by_date:
+                new_log.append({"date": day, "scores": scores, "is_real": False})
         new_log.sort(key=lambda x: x["date"])
         new_log = new_log[-365:]
         _save_score_log(new_log)
-        print(f"[startup] Backfilled 6-month history for {len(current_scores)} countries")
+        print(f"[startup] Backfilled 3-month history for {len(current_scores)} countries")
 
 
 def get_country_history(iso2: str, current_score: float) -> pd.DataFrame:
     """
     Return WorldMonitor score history for a country from the persistent local log.
-    Only contains real readings fetched from WorldMonitor — no synthetic data.
-    If the log has fewer than 2 points, returns just the current reading.
+    `is_real` column: True = live scraped reading, False = backfilled baseline estimate.
     """
     log = _load_score_log()
     rows = []
     for entry in log:
         score = entry.get("scores", {}).get(iso2)
         if score is not None:
-            rows.append({"date": pd.Timestamp(entry["date"]), "score": float(score)})
+            rows.append({
+                "date":    pd.Timestamp(entry["date"]),
+                "score":   float(score),
+                "is_real": entry.get("is_real", False),
+            })
 
     # Always include today's current reading (may already be in log)
     today = pd.Timestamp(datetime.now().date())
     if not rows or rows[-1]["date"] < today:
-        rows.append({"date": today, "score": float(current_score)})
+        rows.append({"date": today, "score": float(current_score), "is_real": True})
 
     df = pd.DataFrame(rows).sort_values("date").drop_duplicates(subset="date")
-    cutoff = today - pd.Timedelta(days=HISTORY_DAYS)
+    cutoff = today - pd.Timedelta(days=CHART_DAYS)
     df = df[df["date"] >= cutoff].copy()
     df["is_mock"] = False
     return df
@@ -726,19 +734,19 @@ def generate_narrative(name: str, score: float, row: dict, analytics: dict) -> s
 
     # Middle: trend over time
     if slope > 0.15:
-        s2 = f"The 30-day trend is clearly upward (slope: +{slope:.2f} pts/day), and the current score sits {'+' if score > mean else ''}{score - mean:.1f} pts relative to its 6-month average of {mean:.0f}."
+        s2 = f"The 30-day trend is clearly upward (slope: +{slope:.2f} pts/day), and the current score sits {'+' if score > mean else ''}{score - mean:.1f} pts relative to its 3-month average of {mean:.0f}."
     elif slope < -0.15:
-        s2 = f"The 30-day trajectory shows a gradual easing (slope: {slope:.2f} pts/day). The score is {'+' if score > mean else ''}{score - mean:.1f} pts versus the 6-month mean of {mean:.0f}."
+        s2 = f"The 30-day trajectory shows a gradual easing (slope: {slope:.2f} pts/day). The score is {'+' if score > mean else ''}{score - mean:.1f} pts versus the 3-month mean of {mean:.0f}."
     else:
         direction = "above" if score > mean else "below"
-        s2 = f"The score is broadly flat over the recent 30-day window, sitting {abs(score - mean):.1f} pts {direction} the 6-month average of {mean:.0f}."
+        s2 = f"The score is broadly flat over the recent 30-day window, sitting {abs(score - mean):.1f} pts {direction} the 3-month average of {mean:.0f}."
 
     # Close: volatility or spikes
     if vol:
-        s3 = f"Short-term volatility is elevated relative to the 6-month baseline, suggesting recent instability readings have been less predictable than the longer-term pattern."
+        s3 = f"Short-term volatility is elevated relative to the 3-month baseline, suggesting recent instability readings have been less predictable than the longer-term pattern."
     elif len(spikes) >= 2:
         last_spike = spikes[-1]
-        s3 = f"The 6-month history includes {len(spikes)} notable spike event(s); the most recent on {last_spike['date'].strftime('%d %b')} saw a +{last_spike['jump']} pt jump."
+        s3 = f"The 3-month history includes {len(spikes)} notable spike event(s); the most recent on {last_spike['date'].strftime('%d %b')} saw a +{last_spike['jump']} pt jump."
     elif d30 >= 8:
         s3 = f"The 30-day gain of +{d30} pts represents a meaningful deterioration from the position one month ago."
     elif d30 <= -8:
@@ -803,7 +811,6 @@ def build_bar_chart(df: pd.DataFrame, selected_iso2: str | None = None, sort_by:
 def build_history_chart(analytics: dict, country_name: str, score: float) -> go.Figure:
     df = analytics["df"]
     spikes = analytics["spikes"]
-    is_mock = df.get("is_mock", pd.Series([False] * len(df))).any() if "is_mock" in df.columns else True
 
     fig = go.Figure()
 
@@ -818,14 +825,47 @@ def build_history_chart(analytics: dict, country_name: str, score: float) -> go.
             annotation_font=dict(color=CLR["muted"], size=9),
         )
 
-    # Raw score line
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["score"],
-        mode="lines",
-        name="WM Score",
-        line=dict(color=score_color(score), width=1.8),
-        hovertemplate="<b>%{x|%d %b %Y}</b><br>Score: %{y:.1f}<extra></extra>",
-    ))
+    # Split into baseline estimates and real scraped readings
+    has_real_col = "is_real" in df.columns and df["is_real"].any()
+
+    if has_real_col:
+        df_base = df[~df["is_real"]]
+        df_real = df[df["is_real"]]
+
+        # Baseline (backfilled) — dashed, muted
+        if not df_base.empty:
+            # Connect last baseline point to first real point for visual continuity
+            if not df_real.empty:
+                bridge = pd.concat([df_base.iloc[[-1]], df_real.iloc[[0]]])
+            else:
+                bridge = df_base
+            fig.add_trace(go.Scatter(
+                x=df_base["date"], y=df_base["score"],
+                mode="lines",
+                name="Baseline Estimate",
+                line=dict(color="rgba(90,115,153,0.5)", width=1.5, dash="dot"),
+                hovertemplate="<b>%{x|%d %b %Y}</b><br>Baseline est.: %{y:.1f}<extra></extra>",
+            ))
+
+        # Real scraped readings — solid, colored, with markers
+        if not df_real.empty:
+            fig.add_trace(go.Scatter(
+                x=df_real["date"], y=df_real["score"],
+                mode="lines+markers",
+                name="Live Score",
+                line=dict(color=score_color(score), width=2),
+                marker=dict(size=5, color=score_color(score)),
+                hovertemplate="<b>%{x|%d %b %Y}</b><br>Score: %{y:.1f}<extra></extra>",
+            ))
+    else:
+        # No distinction — single line
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df["score"],
+            mode="lines",
+            name="WM Score",
+            line=dict(color=score_color(score), width=1.8),
+            hovertemplate="<b>%{x|%d %b %Y}</b><br>Score: %{y:.1f}<extra></extra>",
+        ))
 
     # 7-day MA
     fig.add_trace(go.Scatter(
@@ -836,20 +876,11 @@ def build_history_chart(analytics: dict, country_name: str, score: float) -> go.
         hovertemplate="7d MA: %{y:.1f}<extra></extra>",
     ))
 
-    # 30-day MA
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["ma30"],
-        mode="lines",
-        name="30-day MA",
-        line=dict(color="rgba(255,255,255,0.18)", width=1.2, dash="dash"),
-        hovertemplate="30d MA: %{y:.1f}<extra></extra>",
-    ))
-
-    # 6-month average line
+    # 3-month average line
     fig.add_hline(
         y=analytics["mean_6m"],
         line=dict(color="rgba(255,255,255,0.12)", width=1, dash="longdash"),
-        annotation_text=f"6m avg: {analytics['mean_6m']:.0f}",
+        annotation_text=f"3m avg: {analytics['mean_6m']:.0f}",
         annotation_position="bottom right",
         annotation_font=dict(color=CLR["muted"], size=9),
     )
@@ -868,7 +899,8 @@ def build_history_chart(analytics: dict, country_name: str, score: float) -> go.
             hovertemplate=f'<b>Spike detected</b><br>Date: {sp["date"].strftime("%d %b")}<br>+{sp["jump"]} pts<extra></extra>',
         ))
 
-    data_note = f" · {len(df)} readings recorded" if not is_mock else ""
+    n_real = int(df["is_real"].sum()) if "is_real" in df.columns else len(df)
+    data_note = f" · {n_real} live reading(s)"
 
     fig.update_layout(
         paper_bgcolor=CLR["panel"],
@@ -876,7 +908,7 @@ def build_history_chart(analytics: dict, country_name: str, score: float) -> go.
         margin=dict(l=10, r=10, t=36, b=10),
         height=310,
         title=dict(
-            text=f"{country_name} — WorldMonitor Score · 6 Months{data_note}",
+            text=f"{country_name} — WorldMonitor Score · 3 Months{data_note}",
             font=dict(color=CLR["muted"], size=11),
             x=0.01,
         ),
@@ -1039,7 +1071,7 @@ try:
     _initial_json = _initial_df.to_json(date_format="iso", orient="records")
     print(f"[startup] Loaded {len(_initial_df)} countries OK")
 
-    # Backfill 6-month history for any country that's missing days
+    # Backfill 3-month history for any country that's missing days
     _current_scores = {
         row["iso2"]: row["score"]
         for _, row in _initial_df.iterrows()
@@ -1184,7 +1216,7 @@ app.layout = dbc.Container([
         ], width=3),
         dbc.Col([
             html.Div([
-                section_header("Historical Trend — 6 Months"),
+                section_header("Historical Trend — 3 Months"),
                 dcc.Loading(type="circle", color=CLR["accent"],
                             children=dcc.Graph(id="history-chart",
                                                config={"displayModeBar": False})),
@@ -1221,13 +1253,13 @@ app.layout = dbc.Container([
         ], width=12),
     ], className="g-3 mb-3"),
 
-    # ── CONFLICT EVENTS (UCDP) ───────────────────────────────────────────────
+    # ── CONFLICT & UNREST EVENTS ─────────────────────────────────────────────
     dbc.Row([
         dbc.Col([
             html.Div([
-                section_header("Conflict Events — UCDP (WorldMonitor)"),
+                section_header("Conflict & Unrest Events — WorldMonitor (30 days)"),
                 dcc.Loading(type="circle", color=CLR["accent"],
-                            children=html.Div(id="ucdp-panel")),
+                            children=html.Div(id="conflict-panel")),
             ], className="panel"),
         ], width=12),
     ], className="g-3 mb-3"),
@@ -1460,9 +1492,10 @@ def update_drilldown(iso2, json_data):
 
     narrative_text = generate_narrative(name, score, row, analytics)
     n_readings = len(hist)
+    n_real = int(hist["is_real"].sum()) if "is_real" in hist.columns else n_readings
     mock_note = html.P(
-        f"History: {n_readings} WorldMonitor reading(s) recorded locally. "
-        "Chart grows in real-time as the dashboard polls WorldMonitor.",
+        f"History: {n_real} live reading(s) · {n_readings - n_real} baseline estimate(s). "
+        "Solid line = live scrape. Dashed = staticBaseline backfill.",
         style={"fontSize": "9px", "color": CLR["muted"], "marginTop": "8px",
                "fontStyle": "italic", "borderTop": f"1px solid {CLR['border']}",
                "paddingTop": "6px"},
@@ -1519,54 +1552,51 @@ def update_alerts(json_data, selected_iso2):
 
 
 @app.callback(
-    Output("ucdp-panel", "children"),
+    Output("conflict-panel", "children"),
     Input("country-select", "value"),
 )
-def update_ucdp_panel(iso2):
+def update_conflict_panel(iso2):
     if not iso2:
-        return html.Div("Select a country to see conflict events.",
+        return html.Div("Select a country to see conflict and unrest events.",
                         style={"color": CLR["muted"], "fontSize": "11px"})
 
     name = ME_COUNTRIES[iso2]["name"]
-    all_events = fetch_ucdp_events()
+    all_events = fetch_unrest_events(days=30)
     events = [e for e in all_events if e.get("country") == name]
 
     if not events:
         return html.Div(
-            f"No UCDP conflict events recorded for {name} in the current WorldMonitor dataset.",
+            f"No unrest events recorded for {name} in the last 30 days.",
             style={"color": CLR["muted"], "fontSize": "11px"},
         )
 
-    VIOLENCE_LABEL = {
-        "UCDP_VIOLENCE_TYPE_STATE_BASED":    "State-based",
-        "UCDP_VIOLENCE_TYPE_NON_STATE":      "Non-state",
-        "UCDP_VIOLENCE_TYPE_ONE_SIDED":      "One-sided",
+    EVENT_TYPE_LABEL = {
+        "UNREST_EVENT_TYPE_PROTEST":  "Protest",
+        "UNREST_EVENT_TYPE_MILITARY": "Military",
+        "UNREST_EVENT_TYPE_NATURAL":  "Natural",
     }
 
     rows = []
-    for e in sorted(events, key=lambda x: x.get("dateStart", 0), reverse=True)[:50]:
-        date_ms = e.get("dateStart") or e.get("dateEnd") or 0
-        date_str = datetime.fromtimestamp(date_ms / 1000).strftime("%Y-%m-%d") if date_ms else "—"
-        deaths = e.get("deathsBest")
-        death_str = str(int(deaths)) if deaths is not None else "—"
-        vtype = VIOLENCE_LABEL.get(e.get("violenceType", ""), e.get("violenceType", "—"))
-        side_a = e.get("sideA", "—")
-        side_b = e.get("sideB", "—")
+    for e in sorted(events, key=lambda x: x.get("occurredAt", 0), reverse=True)[:50]:
+        ts = e.get("occurredAt") or 0
+        date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d") if ts else "—"
+        etype = EVENT_TYPE_LABEL.get(e.get("eventType", ""), e.get("eventType", "—"))
+        title = e.get("title") or e.get("description") or e.get("headline") or "—"
+        if len(title) > 120:
+            title = title[:117] + "…"
+        severity = e.get("severity") or e.get("severityLevel") or "—"
+        fatalities = e.get("fatalities") or e.get("deaths") or e.get("deathsBest")
+        fat_str = str(int(fatalities)) if fatalities is not None else "—"
         rows.append({
-            "Date":         date_str,
-            "Type":         vtype,
-            "Side A":       side_a,
-            "Side B":       side_b,
-            "Deaths (est)": death_str,
+            "Date":       date_str,
+            "Type":       etype,
+            "Event":      title,
+            "Severity":   str(severity),
+            "Fatalities": fat_str,
         })
 
-    total_deaths = sum(
-        int(e["deathsBest"]) for e in events if e.get("deathsBest") is not None
-    )
     summary = html.P(
-        f"{name} — {len(events)} UCDP events found  |  "
-        f"Total deaths (est): {total_deaths:,}  |  "
-        f"Showing most recent 50",
+        f"{name} — {len(events)} unrest event(s) in last 30 days  |  Showing most recent 50",
         style={"fontSize": "10px", "color": CLR["muted"], "marginBottom": "8px"},
     )
 
