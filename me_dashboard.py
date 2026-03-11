@@ -392,7 +392,7 @@ def _load_score_log() -> list[dict]:
 def _save_score_log(log: list[dict]) -> None:
     try:
         with open(SCORE_LOG_FILE, "w") as f:
-            json.dump(log, f)
+            json.dump(log, f, indent=2)
     except Exception as e:
         print(f"[log] Could not write score log: {e}")
 
