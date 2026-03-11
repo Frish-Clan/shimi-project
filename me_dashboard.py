@@ -412,6 +412,44 @@ def append_scores_to_log(scores: dict[str, float]) -> None:
     _save_score_log(log)
 
 
+def backfill_score_log(current_scores: dict[str, float]) -> None:
+    """
+    Ensure every country in current_scores has at least 7 days of history.
+    For any day in the last 7 days where a country has no reading, write the
+    current score as a baseline.  Only fills gaps — never overwrites real data.
+    """
+    log = _load_score_log()
+    today = datetime.now().date()
+
+    # Build a lookup: date_str → {iso2: score}
+    log_by_date: dict[str, dict] = {e["date"]: dict(e.get("scores", {})) for e in log}
+
+    changed = False
+    for days_back in range(6, 0, -1):   # 6 days ago → 1 day ago (today handled by append_scores_to_log)
+        day = (today - timedelta(days=days_back)).isoformat()
+        day_scores = log_by_date.get(day, {})
+        for iso2, score in current_scores.items():
+            if iso2 not in day_scores and score is not None:
+                day_scores[iso2] = score
+                changed = True
+        log_by_date[day] = day_scores
+
+    if changed:
+        # Rebuild log preserving existing order, inserting/updating backfilled days
+        existing_dates = {e["date"] for e in log}
+        new_log = []
+        for e in log:
+            d = e["date"]
+            new_log.append({"date": d, "scores": log_by_date[d]})
+        for day, scores in sorted(log_by_date.items()):
+            if day not in existing_dates:
+                new_log.append({"date": day, "scores": scores})
+        new_log.sort(key=lambda x: x["date"])
+        new_log = new_log[-365:]
+        _save_score_log(new_log)
+        print(f"[startup] Backfilled 7-day history for {len(current_scores)} countries")
+
+
 def get_country_history(iso2: str, current_score: float) -> pd.DataFrame:
     """
     Return WorldMonitor score history for a country from the persistent local log.
@@ -991,6 +1029,15 @@ try:
     _, _initial_df = load_all_data()
     _initial_json = _initial_df.to_json(date_format="iso", orient="records")
     print(f"[startup] Loaded {len(_initial_df)} countries OK")
+
+    # Backfill 7-day history for any country that's new or missing days
+    _current_scores = {
+        row["iso2"]: row["score"]
+        for _, row in _initial_df.iterrows()
+        if row["score"] is not None
+    }
+    backfill_score_log(_current_scores)
+
 except Exception as _e:
     print(f"[startup] Initial load failed: {_e}")
     _initial_json = None
