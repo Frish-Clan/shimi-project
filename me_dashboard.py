@@ -1065,6 +1065,12 @@ app.layout = dbc.Container([
                                                     "marginLeft": "8px"}),
                 html.Span(id="last-updated", style={"color": CLR["muted"], "fontSize": "10px",
                                                       "marginLeft": "8px"}),
+                html.Button("↺ Refresh Live Data", id="force-refresh-btn", n_clicks=0,
+                            style={"marginLeft": "16px", "padding": "4px 12px",
+                                   "fontSize": "10px", "cursor": "pointer",
+                                   "background": "transparent", "color": CLR["accent"],
+                                   "border": f"1px solid {CLR['accent']}",
+                                   "borderRadius": "4px", "fontFamily": "JetBrains Mono, monospace"}),
             ], style={"textAlign": "right", "paddingTop": "8px"}),
         ], width=4),
     ], style={"background": "#060d17", "borderBottom": f"1px solid {CLR['border']}",
@@ -1174,9 +1180,13 @@ app.layout = dbc.Container([
     Output("last-updated", "children"),
     Input("refresh-interval", "n_intervals"),
     Input("country-select", "value"),
+    Input("force-refresh-btn", "n_clicks"),
 )
-def refresh_data(_, _country):
+def refresh_data(_, _country, n_clicks):
     """Load all country data on each refresh cycle."""
+    # If the button was clicked, bust the scrape cache so we re-fetch immediately
+    if dash.callback_context.triggered_id == "force-refresh-btn":
+        _cache.pop("wm_scrape_all", None)
     _, df = load_all_data()
     timestamp = datetime.now().strftime("Updated %H:%M:%S")
     return df.to_json(date_format="iso", orient="records"), timestamp
