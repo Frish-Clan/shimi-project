@@ -182,6 +182,65 @@ def fetch_ucdp_events() -> list:
 WM_SCRAPE_TTL = 20 * 60   # 20 min cache for scraped data
 
 
+def fetch_wm_all_scores() -> dict:
+    """
+    Scrape worldmonitor.app once and extract live CII scores for ALL countries.
+    Returns { iso2: { score, components } }
+    One browser load → 87+ countries in ~15s, cached 20 min.
+    """
+    cache_key = "wm_scrape_all"
+    entry = _cache.get(cache_key)
+    if entry and (time.time() - entry["ts"]) < WM_SCRAPE_TTL:
+        return entry["data"]
+
+    result = {}
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            # Loading with ?country=IR triggers full 207-country CII data load
+            page.goto("https://www.worldmonitor.app/?country=IR", wait_until="commit", timeout=30000)
+            page.wait_for_selector(".cii-country", timeout=20000)
+            time.sleep(3)
+
+            raw_list = page.evaluate('''() => {
+                return Array.from(document.querySelectorAll('.cii-country[data-code]')).map(el => ({
+                    iso2:  el.dataset.code,
+                    score: el.querySelector('.cii-score')?.textContent || null,
+                    comps: Array.from(el.querySelectorAll('.cii-components span[title]')).map(s => ({
+                        name: s.title, value: s.textContent
+                    })),
+                }));
+            }''')
+            browser.close()
+
+            for entry in raw_list:
+                iso2 = entry.get("iso2")
+                score_str = entry.get("score")
+                if not iso2 or not score_str:
+                    continue
+                try:
+                    score = int(score_str)
+                except ValueError:
+                    continue
+                components = {}
+                for comp in entry.get("comps", []):
+                    val_str = comp["value"].split(":")[-1] if ":" in comp["value"] else comp["value"]
+                    try:
+                        components[comp["name"]] = int(val_str)
+                    except ValueError:
+                        pass
+                result[iso2] = {"score": score, "components": components, "source": "worldmonitor_scraped"}
+
+        print(f"[WM-scrape] fetched {len(result)} country scores from worldmonitor.app")
+    except Exception as e:
+        print(f"[WM-scrape] all-scores fetch failed: {e}")
+
+    _cache[cache_key] = {"data": result, "ts": time.time()}
+    return result
+
+
 def fetch_wm_live(iso2: str) -> dict:
     """
     Scrape the WorldMonitor website for live instability data for a country.
@@ -391,11 +450,21 @@ def load_all_data() -> tuple[dict, pd.DataFrame]:
     bootstrap    = fetch_bootstrap()
     live_scores  = parse_live_scores(bootstrap)          # iso2 → {score, ...}  (from bootstrap)
     global_scores = fetch_global_risk_scores()           # iso2 → {score, ...}  (from leaderboard)
+    scraped_scores = fetch_wm_all_scores()               # iso2 → {score, ...}  (from WM website)
 
-    # Merge: bootstrap takes priority (richer dynamic signals), then global leaderboard
+    # Merge priority: scraped (live website) > bootstrap > global leaderboard
     for iso2, data in global_scores.items():
         if iso2 not in live_scores and iso2 in ME_COUNTRIES:
             live_scores[iso2] = data
+
+    # Override with scraped scores — these match what worldmonitor.app displays
+    for iso2, data in scraped_scores.items():
+        if iso2 in ME_COUNTRIES:
+            live_scores[iso2] = {
+                **live_scores.get(iso2, {}),
+                "score":   data["score"],
+                "source":  "worldmonitor_scraped",
+            }
 
     rows = []
     for iso2, meta in ME_COUNTRIES.items():
@@ -430,7 +499,7 @@ def load_all_data() -> tuple[dict, pd.DataFrame]:
             "delta_30d":  d30,
             "delta_180d": d180,
             "trend_raw":  live.get("trend_raw", ""),
-            "has_live":   live.get("source") == "worldmonitor_live",
+            "has_live":   live.get("source") in ("worldmonitor_live", "worldmonitor_scraped"),
         })
 
     df = pd.DataFrame(rows)
@@ -1467,7 +1536,7 @@ def update_live_intel(iso2):
             dbc.Col(metric_tile("WM Live Score", str(score), band_color), width=3),
             dbc.Col(metric_tile("Unrest",    str(comps.get("Unrest",    "—")), CLR["high"]),     width=2),
             dbc.Col(metric_tile("Conflict",  str(comps.get("Conflict",  "—")), CLR["critical"]), width=2),
-            dbc.Col(metric_tile("Security",  str(comps.get("Security",  "—")), CLR["medium"]),   width=2),
+            dbc.Col(metric_tile("Security",  str(comps.get("Security",  "—")), CLR["elevated"]), width=2),
             dbc.Col(metric_tile("Info Vel.", str(comps.get("Information","—")), CLR["accent"]),  width=3),
         ], className="g-2 mb-3")
     else:
