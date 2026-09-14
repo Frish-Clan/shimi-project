@@ -298,6 +298,6 @@ html, body {
 }
 @media (max-width: 800px) {
   .app-body { flex-direction: column; }
-  .sidebar-left { width: 100%; height: 220px; flex-direction: row; border-right: none; border-bottom: 1px solid var(--border); }
+  .sidebar-left { width: 100%; height: 220px; border-right: none; border-bottom: 1px solid var(--border); }
   .bottom-strip { height: auto; flex-direction: column; }
 }
