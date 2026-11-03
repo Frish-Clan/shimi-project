@@ -280,11 +280,13 @@ def decode_html(headers: dict, body: bytes) -> str:
 
 
 TAG_RE = re.compile(r"<script.*?</script>|<style.*?</style>|<[^>]+>", re.S | re.I)
+# inline formatting tags are removed without a space, so "טכ<b>ניון" still matches "טכניון"
+INLINE_TAG_RE = re.compile(r"</?(?:b|i|u|s|em|strong|font|span|a|small|big|sub|sup)\b[^>]*>", re.I)
 HEB_NIKUD = re.compile(r"[֑-ׇ]")
 
 
 def html_to_text(s: str) -> str:
-    s = html.unescape(TAG_RE.sub(" ", s))
+    s = html.unescape(TAG_RE.sub(" ", INLINE_TAG_RE.sub("", s)))
     s = HEB_NIKUD.sub("", s)
     return re.sub(r"\s+", " ", s)
 
@@ -448,7 +450,7 @@ def cmd_download(args):
                 warc.write(raw)  # concatenated gzip members = valid .warc.gz
                 fname = safe_name(row)
                 with open(os.path.join(bdir, fname), "w", encoding="utf-8") as f:
-                    f.write(re.sub(r"charset=[\w-]+", "charset=utf-8", page, count=1, flags=re.I))
+                    f.write(re.sub(r"""charset=(["']?)[\w-]+""", r"charset=\1utf-8", page, count=1, flags=re.I))
                 listing.append((fname, row["url"], row["timestamp"]))
                 saved += 1
         listing.sort()
